@@ -1,10 +1,8 @@
 <div align="center">
 
-# NuSA-CL
+# [ICLR 2026] Memory-Free Continual Learning with Null Space Adaptation for Zero-Shot Vision-Language Models
 
 ### In-place knowledge accumulation for continually evolving foundation models
-
-**Memory-Free Continual Learning with Null Space Adaptation for Zero-Shot Vision-Language Models**
 
 [Paper](https://arxiv.org/abs/2510.21175) · ICLR 2026
 
