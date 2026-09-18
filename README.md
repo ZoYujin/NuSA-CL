@@ -4,7 +4,8 @@
 
 ### In-place knowledge accumulation for continually evolving foundation models
 
-[Paper](https://arxiv.org/abs/2510.21175) · ICLR 2026
+[![ICLR 2026](https://img.shields.io/badge/ICLR-2026-blue.svg)](https://proceedings.iclr.cc/paper_files/paper/2026/hash/ad217e0c7fecc71bdf48660ad6714b07-Abstract-Conference.html)
+[![arXiv](https://img.shields.io/badge/arXiv-2510.21175-b31b1b.svg)](https://arxiv.org/abs/2510.21175)
 
 </div>
 
@@ -217,7 +218,9 @@ scripts/
   title     = {Memory-Free Continual Learning with Null Space Adaptation for Zero-Shot Vision-Language Models},
   author    = {Jo, Yujin and Kim, Taesup},
   booktitle = {International Conference on Learning Representations},
-  year      = {2026}
+  pages     = {106089--106106},
+  year      = {2026},
+  url       = {https://proceedings.iclr.cc/paper_files/paper/2026/hash/ad217e0c7fecc71bdf48660ad6714b07-Abstract-Conference.html}
 }
 ```
 
