@@ -44,7 +44,6 @@ class conceptual_captions(Dataset):
             img_key="filepath",
             caption_key="title",
         )
-        # breakpoint()
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=batch_size,

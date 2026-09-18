@@ -115,12 +115,6 @@ class Caltech101(ClassificationDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "caltech-101"
-        # dataset_path = os.path.join(self.location, 'caltech-101')  # 여기서 caltech-101로 경로 수정
-        # if os.path.exists(dataset_path):
-        #     self.location = dataset_path
-        #     download_flag = False  # 이미 존재하면 다운로드를 하지 않음
-        # else:
-        #     download_flag = True  # 존재하지 않으면 다운로드
 
         dataset = datasets.Caltech101(
             self.location, download=True, transform=self.preprocess

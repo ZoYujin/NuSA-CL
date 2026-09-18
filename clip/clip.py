@@ -162,7 +162,7 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
                     try:
                         value = node.s("value")
                     except RuntimeError:
-                        # value가 string 타입이 아닐 때
+                        # The constant is not a string.
                         continue
                     if str(value).startswith("cuda"):
                         node.copyAttributes(device_node)
@@ -270,7 +270,7 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
                     try:
                         value = node.s("value")
                     except RuntimeError:
-                        # value가 string 타입이 아닐 때
+                        # The constant is not a string.
                         continue
                     if str(value).startswith("cuda"):
                         node.copyAttributes(device_node)

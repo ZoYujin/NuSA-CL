@@ -49,7 +49,6 @@ class LoRALayer():
         # define params that require LoRA {'param_name': 'lora_name'}
         self.params_with_lora = {}
         self.lora_m = lora_m
-        # 추가: weight_residual을 저장할 변수 (초기엔 None)
         self.weight_residual = None
 
     def register_lora_param(self):
@@ -80,10 +79,6 @@ class LoRALayer():
     def transpose(self, w: torch.Tensor):
         return w.transpose(0, 1) if self.fan_in_fan_out else w
 
-    # def merge_BA(self, param_name: str):
-    #     lora_name = self.params_with_lora[param_name]
-    #     return self.transpose((eval(f'self.{lora_name}_lora_B') @ eval(f'self.{lora_name}_lora_A')).view(eval(f'self.{param_name}').shape))
-
     def merge_BA(self, param_name: str) -> torch.Tensor:
         lora_name = self.params_with_lora[param_name]
         A = getattr(self, f'{lora_name}_lora_A')
@@ -93,45 +88,21 @@ class LoRALayer():
             update = B @ M @ A
         else:
             update = B @ A
-        # 원래 W와 같은 shape 으로
         W = getattr(self, param_name)
         return self.transpose(update).view_as(W)
 
     def merge_lora_param(self):
         for param_name, lora_name in self.params_with_lora.items():
-            # 1) 기존 weight (frozen p) 대신 residual 을 베이스로 쓰고 있는지 확인
             if self.weight_residual is None:
                 base = set_param(self, param_name, mode='get').detach()
             else:
                 base = self.weight_residual.detach()
-                # print(f"[MERGE DEBUG] {param_name} residual norm: {base.norm().item():.4f}")
 
-            # 2) 추가되는 LoRA 파트
             additional = self.merge_BA(param_name) * self.scaling
-            # print(f"[MERGE DEBUG] {param_name} additional norm: {additional.norm().item():.4f}")
 
-            # 3) 실제 더해지는지 확인
             p_new = base + additional
-            # (선택) p_new 에서 base 를 빼보면 additional 과 일치해야 함
-            diff = (p_new - base - additional).abs().max().item()
-            # print(f"[MERGE DEBUG] {param_name} merge residual check (should be 0): {diff:.3e}")
 
-            # 4) 최종 설정
             set_param(self, param_name, param=p_new, mode='update')
-            # print(f"[MERGE DEBUG] {param_name} merged ✓\n")
-
-    # def merge_lora_param(self):
-    #     for param_name, lora_name in self.params_with_lora.items():
-    #         p = set_param(self, param_name, mode='get')
-    #         # p_new = p + scaling * (B @ A) + weight_residual
-    #         # 여기서 weight_residual이 있다면 이를 더해서 기존 weight의 효과를 보존하도록 합니다.
-    #         additional = self.merge_BA(param_name) * self.scaling
-    #         if self.weight_residual is not None:
-    #             p_new = self.weight_residual.detach() + additional
-    #         else:
-    #             p_new = p.detach() + additional
-    #         set_param(self, param_name, param=p_new, mode='update')
-    #         print(param_name, "merged")
 
     def add_lora_data(self):
         r"""NOT differentiable"""
@@ -249,7 +220,7 @@ class PlainMultiheadAttentionLoRA(nn.Module):
         self.proj = nn.Linear(self.embed_dim, self.embed_dim, bias=existing_mha.out_proj.bias is not None)
         self.lora_m = lora_m
         self.weight_residual = None
-        self.encoder_type = None  # ← 태깅 공간 미리 확보
+        self.encoder_type = None
         self.layer_idx = None
         self.get_cur_feat = False
         # Initialize parameters
@@ -443,374 +414,43 @@ class PlainMultiheadAttentionLoRA(nn.Module):
         **kwargs
     ):
         get_cur_feat = self.get_cur_feat
-        # print(f"[DEBUG] get_feat: {get_feat}, get_cur_feat: {get_cur_feat}")
-        # 입력 정규화: (B, N, C) 형식으로 통일
+        # Normalize inputs to batch-first (B, N, C) form.
         x = query if self.batch_first else query.transpose(0, 1)
         B, N, C = x.shape
 
-        # Feature Matrix 누적 (전체 태스크 기준)
+        # Accumulate the feature covariance across tasks.
         if get_feat:
-            with torch.no_grad():  # 메모리 효율성을 위해 gradient 계산 방지
+            with torch.no_grad():
                 feat_mat = torch.bmm(x.permute(0, 2, 1), x).sum(dim=0).to(self.device)
                 if self.n_matrix == 0:
                     self.matrix = feat_mat / (B * N)
                 else:
                     self.matrix = (self.matrix * self.n_matrix + feat_mat) / (self.n_matrix + B * N)
                 self.n_matrix += B * N
-                # print(f"[DEBUG] Updated matrix, new n_matrix: {self.n_matrix}")
-        # Current Feature Matrix 누적 (현재 태스크 기준)
+        # Accumulate the feature covariance for the current task.
         if get_cur_feat:
-            with torch.no_grad():  # 메모리 효율성을 위해 gradient 계산 방지
+            with torch.no_grad():
                 feat_mat = torch.bmm(x.permute(0, 2, 1), x).sum(dim=0).to(self.device)
                 if self.n_cur_matrix == 0:
                     self.cur_matrix = feat_mat / (B * N)
                 else:
                     self.cur_matrix = (self.cur_matrix * self.n_cur_matrix + feat_mat) / (self.n_cur_matrix + B * N)
                 self.n_cur_matrix += B * N
-                # print(f"[DEBUG] Updated cur_matrix, new n_cur_matrix: {self.n_cur_matrix}")
 
-        # 본래 attention 연산 수행
         return self.forward_module(query, key, value, **kwargs)
 
     def reset_cur_matrix(self):
-        """현재 태스크의 activation matrix를 초기화"""
+        """Reset the current task activation matrix."""
         self.cur_matrix.zero_()
         self.n_cur_matrix = 0
 
     def get_feature_list(self):
-        """현재까지 수집된 feature list 반환"""
+        """Return the accumulated feature list."""
         return self.feature_list
 
     def set_feature_list(self, feature_list):
-        """feature list 설정"""
+        """Set the accumulated feature list."""
         self.feature_list = feature_list
-
-class DoubleLinearLoRA(nn.Module):
-    """
-    Null‐space + Principal‐space Dual‐LoRA with optional M‐matrix.
-    scaling 계수는 여기서 직접 계산해 사용합니다.
-    """
-    def __init__(
-        self,
-        existing_linear: nn.Linear,
-        r_null: int,
-        r_princ: int,
-        lora_alpha: float,
-        fan_in_fan_out: bool = False,
-        dropout_rate: float = 0.,
-        lora_m: bool = False,
-        ensemble_ratio: float = 0.5,
-    ):
-        super().__init__()
-
-        # 1) 내부 서브모듈 생성
-        self.null = LinearLoRA(
-            existing_linear, r=r_null,
-            lora_alpha=lora_alpha,
-            fan_in_fan_out=fan_in_fan_out,
-            dropout_rate=dropout_rate,
-            lora_m=lora_m
-        )
-        self.princ = LinearLoRA(
-            existing_linear, r=r_princ,
-            lora_alpha=lora_alpha,
-            fan_in_fan_out=fan_in_fan_out,
-            dropout_rate=dropout_rate,
-            lora_m=lora_m
-        )
-
-        # 2) Base weight/bias (frozen)
-        self.weight = nn.Parameter(
-            existing_linear.weight.data.clone(), requires_grad=False
-        )
-        self.bias = (
-            nn.Parameter(existing_linear.bias.data.clone(), requires_grad=False)
-            if existing_linear.bias is not None else None
-        )
-
-        # 3) 앙상블 비율
-        self.ensemble_ratio = ensemble_ratio
-
-        # 4) 직접 계산하는 scaling 계수
-        self.scaling_null  = lora_alpha / math.sqrt(r_null) if r_null > 0 else 0.0
-        self.scaling_princ = lora_alpha / math.sqrt(r_princ) if r_princ > 0 else 0.0
-
-        # 5) dropout
-        self.dropout = nn.Dropout(dropout_rate) if dropout_rate > 0 else None
-
-        self.merged = False
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (1) Dropout
-        if self.dropout is not None:
-            x = self.dropout(x)
-
-        # (2) Base projection
-        y0 = F.linear(x, self.weight, self.bias)
-
-        # (3) Null‐space adapter: B @ M @ A, then scaling_null
-        Bn = self.null.w_lora_B      # (out, r_null)
-        Mn = self.null.w_lora_M      # (r_null, r_null)
-        An = self.null.w_lora_A      # (r_null, in)
-        BA_null = Bn @ (Mn @ An)     # (out, in)
-        y_null = F.linear(x, BA_null) * self.scaling_null
-
-        # (4) Principal‐space adapter
-        Bp = self.princ.w_lora_B
-        Mp = self.princ.w_lora_M
-        Ap = self.princ.w_lora_A
-        BA_princ = Bp @ (Mp @ Ap)
-        y_princ = F.linear(x, BA_princ) * self.scaling_princ
-
-        # (5) Ensemble
-        r = self.ensemble_ratio
-        y_lora = r * y_null + (1 - r) * y_princ
-        return y0 + F.normalize(y_lora, dim=-1)
-
-    def merge_lora_param(self):
-        """
-        학습된 A,B,M 파라미터로 base weight를 직접 갱신합니다.
-        forward와 동일한 B@M@A * scaling 로직을 사용합니다.
-        """
-        if self.merged:
-            return
-
-        base = self.weight.detach().clone()
-
-        # Δ_null = (B@M@A) * scaling_null
-        Bn, Mn, An = (
-            self.null.w_lora_B.detach(),
-            self.null.w_lora_M.detach(),
-            self.null.w_lora_A.detach()
-        )
-        delta_null = (Bn @ (Mn @ An)) * self.scaling_null
-
-        # Δ_princ
-        Bp, Mp, Ap = (
-            self.princ.w_lora_B.detach(),
-            self.princ.w_lora_M.detach(),
-            self.princ.w_lora_A.detach()
-        )
-        delta_princ = (Bp @ (Mp @ Ap)) * self.scaling_princ
-
-        # Ensemble merge
-        r = self.ensemble_ratio
-        new_base = base + r * delta_null + (1 - r) * delta_princ
-
-        # 덮어쓰기
-        self.weight.data.copy_(new_base)
-        self.merged = True
-    def train(self, mode: bool = True):
-        """
-        모듈 전체와 내부 LoRA 모듈에 대해 train/eval 모드 전환
-        """
-        super().train(mode)
-        # LinearLoRA 안의 LoRALayer에도 전달
-        self.null.lora_train(mode)
-        self.princ.lora_train(mode) 
-
-class PlainMultiheadAttentionDualLoRA(nn.Module):
-    """
-    Dual‐LoRA를 적용한 MultiheadAttention.
-    기존 MHA의 q,k,v,o projection을 각각 DoubleLinearLoRA로 감싼 뒤,
-    앙상블 비율에 따라 null/principal 어댑터 출력을 섞어줍니다.
-    """
-    def __init__(
-        self,
-        existing_mha: nn.MultiheadAttention,
-        enable_lora: list,          # ['q','k','v','o'] 중 붙일 projection
-        r_null: int,                # null‐space 차원
-        r_princ: int,               # principal‐space 차원
-        lora_alpha: float,          # scaling
-        ensemble_ratio: float,      # null vs princ 앙상블 비율
-        dropout_rate: float = 0.,   # 입력 드롭아웃
-        lora_m: bool = False        # M‐매트릭스 옵션
-    ):
-        super().__init__()
-        # ⏩ 기존 MHA 속성 복사
-        self.embed_dim  = existing_mha.embed_dim
-        self.num_heads  = existing_mha.num_heads
-        self.batch_first = existing_mha.batch_first
-        self.head_dim    = existing_mha.head_dim
-        self.dropout    = dropout_rate
-
-        # scaled dot‐product attention 함수
-        self.scaled_dot_product_attention = F.scaled_dot_product_attention
-
-        # ⏩ 원본 qkv/o projection 레이어 생성
-        existing_w = existing_mha.in_proj_weight.data
-        existing_b = existing_mha.in_proj_bias.data if existing_mha.in_proj_bias is not None else None
-
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=(existing_b is not None))
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=(existing_b is not None))
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=(existing_b is not None))
-        self.proj   = nn.Linear(self.embed_dim, self.embed_dim, bias=(existing_mha.out_proj.bias is not None))
-
-        # ⏩ weight/bias 복사
-        self.q_proj.weight.data.copy_(existing_w[:self.embed_dim, :])
-        self.k_proj.weight.data.copy_(existing_w[self.embed_dim:2*self.embed_dim, :])
-        self.v_proj.weight.data.copy_(existing_w[2*self.embed_dim:, :])
-        if existing_b is not None:
-            self.q_proj.bias.data.copy_(existing_b[:self.embed_dim])
-            self.k_proj.bias.data.copy_(existing_b[self.embed_dim:2*self.embed_dim])
-            self.v_proj.bias.data.copy_(existing_b[2*self.embed_dim:])
-        self.proj.weight.data.copy_(existing_mha.out_proj.weight.data)
-        if existing_mha.out_proj.bias is not None:
-            self.proj.bias.data.copy_(existing_mha.out_proj.bias.data)
-
-        # projection 어트리뷰트 매핑
-        param_to_proj = {
-            'q': 'q_proj',
-            'k': 'k_proj',
-            'v': 'v_proj',
-            'o': 'proj'       # ← 여기서 'o'는 실제로 self.proj에 대응
-        }
-
-        # enable_lora에 따라 해당 projection 레이어를 wrapping
-        for name in enable_lora:
-            proj_attr = param_to_proj.get(name)
-            if proj_attr is None:
-                raise ValueError(f"Unknown LoRA target: {name}")
-            base = getattr(self, proj_attr)   # q_proj, k_proj, v_proj 또는 proj
-            wrapped = DoubleLinearLoRA(
-                base,
-                r_null=r_null,
-                r_princ=r_princ,
-                lora_alpha=lora_alpha,
-                fan_in_fan_out=False,
-                dropout_rate=dropout_rate,
-                lora_m=lora_m,
-                ensemble_ratio=ensemble_ratio
-            )
-            setattr(self, proj_attr, wrapped)
-
-        # GPM(Feature Accumulation)용 공간 초기화
-        self.matrix     = torch.zeros(self.embed_dim, self.embed_dim)
-        self.n_matrix   = 0
-        self.cur_matrix = torch.zeros(self.embed_dim, self.embed_dim)
-        self.n_cur_matrix = 0
-        self.feature_list  = None
-
-    def merge_lora_param(self):
-        """
-        학습된 null/princ LoRA를 앙상블 합산해
-        base projection의 weight에 덮어씁니다.
-        """
-        for proj_name in ['q_proj', 'k_proj', 'v_proj', 'proj']:
-            mod = getattr(self, proj_name)
-            if isinstance(mod, DoubleLinearLoRA) and not mod.merged:
-                mod.merge_lora_param()
-        return
-
-    def forward_module(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        key_padding_mask=None,
-        need_weights: bool = True,
-        attn_mask=None,
-        average_attn_weights: bool = True,
-        is_causal: bool = False
-    ):
-        # 1) causal + mask 체크
-        if attn_mask is not None and is_causal:
-            raise AssertionError("Only allow causal mask or attn_mask")
-
-        # 2) batch_first 처리: 내부는 (seq, batch, dim) 형태여야 함
-        is_batched = query.dim() == 3
-        if self.batch_first and is_batched:
-            if key is value:
-                if query is key:
-                    query = key = value = query.transpose(1, 0)
-                else:
-                    query, key = [x.transpose(1, 0) for x in (query, key)]
-                    value = key
-            else:
-                query, key, value = [x.transpose(1, 0) for x in (query, key, value)]
-
-        tgt_len, bsz, _ = query.shape
-        src_len = key.shape[0]
-
-        # 3) Q, K, V 계산
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        v = self.v_proj(value)
-
-        # 4) attn_mask 차원 정리
-        if attn_mask is not None:
-            if attn_mask.dim() == 2:
-                attn_mask = attn_mask.unsqueeze(0)
-            elif attn_mask.dim() == 3:
-                attn_mask = attn_mask.view(bsz * self.num_heads, tgt_len, src_len)
-            else:
-                raise RuntimeError(f"Unsupported attn_mask dim {attn_mask.dim()}")
-
-        # 5) scaled dot‐product attention
-        attn_output = self.scaled_dot_product_attention(
-            q.view(bsz, self.num_heads, tgt_len, self.head_dim),
-            k.view(bsz, self.num_heads, src_len, self.head_dim),
-            v.view(bsz, self.num_heads, src_len, self.head_dim),
-            attn_mask,
-            self.dropout if self.training else 0.0,
-            is_causal
-        )  # (batch, heads, seq_len, head_dim)
-
-        # 6) heads 차원 합치기: (batch, heads, seq_len, head_dim) → (seq_len, batch, embed_dim)
-        attn_output = attn_output.permute(2, 0, 1, 3).contiguous()  
-        # 이제 shape = (tgt_len, bsz, num_heads, head_dim)
-        attn_output = attn_output.view(tgt_len, bsz, self.num_heads * self.head_dim)
-        # shape = (tgt_len, bsz, embed_dim)
-
-        # 7) output projection
-        out = self.proj(attn_output)  # DoubleLinearLoRA로 wrapping 되어 앙상블까지 자동 처리
-
-        # 8) batch_first 복원
-        if self.batch_first:
-            out = out.transpose(1, 0)  # → (batch, seq_len, embed_dim)
-
-        return out, None
-
-    def train(self, mode: bool = True):
-        """
-        모듈 전체와 내부 LoRA 모듈에 대해 train/eval 모드 전환
-        """
-        super().train(mode)
-        # DoubleLinearLoRA 안의 LinearLoRA에도 전달
-        for proj_name in ['q_proj', 'k_proj', 'v_proj', 'proj']:
-            mod = getattr(self, proj_name)
-            if isinstance(mod, DoubleLinearLoRA):
-                mod.train(mode)
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        get_feat: bool = False,
-        get_cur_feat: bool = False,
-        **kwargs
-    ):
-        # LoRA GPM용 feature accumulation
-        x = query if self.batch_first else query.transpose(1, 0)
-        B, N, C = x.shape
-
-        print(f"[DEBUG] get_feat: {get_feat}, get_cur_feat: {get_cur_feat}")
-
-        if get_feat:
-            feat = torch.bmm(x.detach().permute(0, 2, 1), x.detach()).sum(dim=0)
-            self.matrix = (self.matrix * self.n_matrix + feat) / (self.n_matrix + B * N)
-            self.n_matrix += B * N
-            print(f"[DEBUG] Updated matrix, new n_matrix: {self.n_matrix}")
-
-        if get_cur_feat:
-            feat = torch.bmm(x.detach().permute(0, 2, 1), x.detach()).sum(dim=0)
-            self.cur_matrix = (self.cur_matrix * self.n_cur_matrix + feat) / (self.n_cur_matrix + B * N)
-            self.n_cur_matrix += B * N
-            print(f"[DEBUG] Updated cur_matrix, new n_cur_matrix: {self.n_cur_matrix}")
-
-        # 실제 attention 연산
-        return self.forward_module(query, key, value, **kwargs)
 
 class Embedding(nn.Embedding, LoRALayer):
     # LoRA implemented in a Embedding layer
