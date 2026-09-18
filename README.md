@@ -226,8 +226,10 @@ scripts/
 
 ## Acknowledgements
 
-This codebase builds on [ZSCL](https://github.com/Thunderbeee/ZSCL) and the original [CLIP](https://github.com/openai/CLIP) implementation. We also thank the authors of LoRA, MiLoRA, and InfLoRA, whose methods are included as comparison baselines.
+This codebase builds on [ZSCL](https://github.com/Thunderbeee/ZSCL) and the original [CLIP](https://github.com/openai/CLIP) implementation.
+
+The LoRA-enabled CLIP attention implementation is adapted from [CLIP-LoRA](https://github.com/MaxZanella/CLIP-LoRA) by Maxime Zanella and Ismail Ben Ayed, released under the AGPL-3.0 license. We also thank the authors of LoRA, MiLoRA, and InfLoRA, whose methods are included as comparison baselines. See [Third-Party Notices](THIRD_PARTY_NOTICES.md) for details.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [GNU Affero General Public License v3.0](LICENSE). Third-party components retain their original licenses and notices as documented in [Third-Party Notices](THIRD_PARTY_NOTICES.md).

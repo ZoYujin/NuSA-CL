@@ -1,6 +1,7 @@
-#  ------------------------------------------------------------------------------------------
-#  This code is reconstructed based on loralib (https://github.com/microsoft/LoRA) by Baijiong Lin.
-#  ------------------------------------------------------------------------------------------
+# SPDX-License-Identifier: AGPL-3.0-only
+# Adapted from CLIP-LoRA: https://github.com/MaxZanella/CLIP-LoRA
+# CLIP-LoRA is licensed under the GNU Affero General Public License v3.0.
+# Its implementation is reconstructed from Microsoft loralib by Baijiong Lin.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
